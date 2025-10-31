@@ -9,13 +9,13 @@
 		"cf-typegen": "wrangler types"
 	},
 	"devDependencies": {
-		"@types/node": "^24.9.0",
-		"typescript": "5.8.3",
-		"wrangler": "^4.43.0"
+		"@types/node": "^24.9.2",
+		"typescript": "5.9.3",
+		"wrangler": "^4.45.3"
 	},
 	"dependencies": {
-		"@cloudflare/containers": "^0.0.29",
-		"hono": "4.8.2"
+		"@cloudflare/containers": "^0.0.30",
+		"hono": "4.10.3"
 	},
 	"cloudflare": {
 		"label": "Containers Starter",

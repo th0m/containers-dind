@@ -1,24 +1,25 @@
-# syntax=docker/dockerfile:1
+FROM docker:dind-rootless
+USER root
+# System deps for Python web server
+RUN set -eux; \
+    apk update; \
+    apk add --no-cache ca-certificates; \
+    update-ca-certificates; \
+    apk add --no-cache python3 py3-pip bash curl
 
-FROM golang:1.24-alpine AS build
+# Create and use a virtual environment to avoid modifying system Python (PEP 668)
+RUN python3 -m venv /opt/venv && \
+    /opt/venv/bin/python -m pip install --upgrade pip setuptools wheel
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Set destination for COPY
-WORKDIR /app
+# Python deps
+COPY container_src/requirements.txt /opt/app/requirements.txt
+RUN /opt/venv/bin/pip install --no-cache-dir -r /opt/app/requirements.txt
 
-# Download any Go modules
-COPY container_src/go.mod ./
-RUN go mod download
+# App
+COPY container_src/app.py /opt/app/app.py
+COPY container_src/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Copy container source code
-COPY container_src/*.go ./
-
-# Build
-RUN CGO_ENABLED=0 GOOS=linux go build -o /server
-
-FROM scratch
-COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=build /server /server
-EXPOSE 8080
-
-# Run
-CMD ["/server"]
+# Start dockerd, then web server
+ENTRYPOINT ["sh", "-c", "dockerd-entrypoint.sh dockerd --iptables=false --ip6tables=false & exec /usr/local/bin/entrypoint.sh"]
