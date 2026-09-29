@@ -3,19 +3,19 @@
 	"description": "Build a Container-enabled Worker",
 	"private": true,
 	"scripts": {
+		"check": "tsc --noEmit",
+		"test": "node --test test/*.test.cjs",
+		"test:local": "node test/local-smoke.cjs",
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
-		"cf-typegen": "wrangler types"
+		"cf-typegen": "wrangler types --include-runtime=false"
 	},
 	"devDependencies": {
+		"@cloudflare/workers-types": "5.20260929.1",
 		"@types/node": "^24.9.2",
 		"typescript": "5.9.3",
-		"wrangler": "^4.45.3"
-	},
-	"dependencies": {
-		"@cloudflare/containers": "^0.0.30",
-		"hono": "4.10.3"
+		"wrangler": "^4.143.1"
 	},
 	"cloudflare": {
 		"label": "Containers Starter",
