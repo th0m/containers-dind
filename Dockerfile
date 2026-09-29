@@ -22,4 +22,4 @@ COPY container_src/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Start dockerd, then web server
-ENTRYPOINT ["sh", "-c", "dockerd-entrypoint.sh dockerd --iptables=false --ip6tables=false & exec /usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["sh", "-c", "dockerd-entrypoint.sh dockerd --iptables=false --ip6tables=false --bridge=none --ip-forward=false & exec /usr/local/bin/entrypoint.sh"]

@@ -12,4 +12,5 @@ until docker version >/dev/null 2>&1; do
   sleep 0.2
 done
 
-exec python3 /opt/app/app.py
+# Avoid the development server's reverse lookup of the runtime's long hostname.
+exec /opt/venv/bin/gunicorn --chdir /opt/app --bind 0.0.0.0:8080 --threads 4 app:app

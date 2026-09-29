@@ -12,8 +12,12 @@
 	"containers": [
 		{
 			"class_name": "MyContainer",
-			"image": "./Dockerfile",
-			"max_instances": 1
+			"scheduling_policy": "durable_object",
+			"images": {
+				"app": {
+					"dockerfile": "./Dockerfile"
+				}
+			}
 		}
 	],
 	"durable_objects": {

@@ -1,30 +1,79 @@
-import { getRandom, Container } from "@cloudflare/containers";
+import { DurableObject } from "cloudflare:workers";
+import { setTimeout } from "node:timers/promises";
 
-export class MyContainer extends Container<Env> {
-  defaultPort = 8080;
-}
+const PORT = 8080;
+const STARTUP_TIMEOUT_MS = 60_000;
+const INACTIVITY_TIMEOUT_MS = 10 * 60_000;
 
-declare global {
-  interface Env {
-    MY_CONTAINER: DurableObjectNamespace<Container>;
+export class MyContainer extends DurableObject<Env> {
+  private ready?: Promise<void>;
+
+  async fetch(request: Request): Promise<Response> {
+    const container = this.ctx.container;
+    if (!container) {
+      throw new Error("MyContainer requires a container attachment.");
+    }
+
+    if (!container.running) {
+      if (!container.images.app) {
+        throw new Error("Deploy the named app image before starting MyContainer.");
+      }
+      container.start({
+        image: container.images.app,
+        instance: "lite",
+        enableInternet: true,
+      });
+    }
+    await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
+
+    // Share readiness checks across concurrent requests. Probe only a safe GET:
+    // retrying POST /run could execute the customer's image more than once.
+    this.ready ??= this.waitUntilReady().finally(() => {
+      this.ready = undefined;
+    });
+    await this.ready;
+
+    const url = new URL(request.url);
+    url.protocol = "http:";
+    return container.getTcpPort(PORT).fetch(new Request(url, request));
+  }
+
+  private async waitUntilReady(): Promise<void> {
+    const container = this.ctx.container!;
+    const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+    let lastError: unknown;
+    while (Date.now() < deadline) {
+      try {
+        const response = await container.getTcpPort(PORT).fetch(
+          "http://container/healthz",
+          { signal: AbortSignal.timeout(1_000) },
+        );
+        await response.body?.cancel();
+        if (response.ok) return;
+        lastError = new Error(`Health check returned ${response.status}`);
+      } catch (error) {
+        lastError = error;
+      }
+      await setTimeout(250);
+    }
+    throw new Error("Docker-in-Docker did not become ready", { cause: lastError });
   }
 }
- 
+
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
-    const stub = await getRandom(env.MY_CONTAINER, 1);
-    await stub.start();
+  async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname !== "/run") {
+      return new Response("Not found", { status: 404 });
+    }
+    if (request.method !== "POST") {
+      return new Response("Method not allowed", {
+        status: 405,
+        headers: { Allow: "POST" },
+      });
+    }
 
-    const headers = new Headers(req.headers);
-    const body = await req.arrayBuffer();
-    const forwarded = new Request("http://container/run", {
-      method: req.method,
-      headers,
-      body: body.byteLength ? body : undefined,
-    });
-
-    const res = await stub.fetch(forwarded);
-    console.log("container /run status", res.status);
-    return res;
+    // Preserve the singleton ID previously selected by getRandom(binding, 1).
+    const id = env.MY_CONTAINER.idFromName("instance-0");
+    return env.MY_CONTAINER.get(id).fetch(request);
   },
-};
+} satisfies ExportedHandler<Env>;
