@@ -24,9 +24,9 @@ def run():
     if not isinstance(image, str) or not image.strip() or image.startswith("-"):
         return jsonify({"error": "invalid_field", "field": "image"}), 400
 
-    # Workloads get no network access unless the caller explicitly opts in.
-    network = payload.get("network", "none")
-    if network not in ("none", "host"):
+    # Nested workloads use Docker bridge networking in their own namespace.
+    network = payload.get("network", "bridge")
+    if network != "bridge":
         return jsonify({"error": "invalid_field", "field": "network"}), 400
 
     run_cmd = ["docker", "run", "--rm", f"--network={network}", image]

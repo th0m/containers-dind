@@ -9,8 +9,10 @@ const { setTimeout } = require('node:timers/promises');
 
 const name = `containers-dind-smoke-${process.pid}`;
 const image = `${name}:local`;
+const probeName = `${name}-http`;
 const caBundle = process.env.LOCAL_CA_BUNDLE && resolve(process.env.LOCAL_CA_BUNDLE);
 let created = false;
+let probeCreated = false;
 let built = false;
 let buildDirectory;
 let cleaned = false;
@@ -21,6 +23,7 @@ function cleanup() {
   // Attempt each cleanup even if another resource is already gone.
   const commands = [];
   if (created) commands.push(['rm', '-fv', name]);
+  if (probeCreated) commands.push(['rm', '-fv', probeName]);
   if (built) commands.push(['image', 'rm', image]);
   for (const args of commands) {
     const result = spawnSync('docker', args, { encoding: 'utf8', timeout: 30_000 });
@@ -105,7 +108,7 @@ async function main() {
   const hello = await request(JSON.stringify({ image: 'hello-world' }));
   assert.equal(hello.status, 200, JSON.stringify(hello.body));
   assert.equal(hello.body.exit_code, 0);
-  assert.equal(hello.body.network, 'none');
+  assert.equal(hello.body.network, 'bridge');
   assert.match(hello.body.stdout, /Hello from Docker!/);
   console.log('PASS: pulls and executes hello-world');
 
@@ -119,28 +122,46 @@ async function main() {
   }
   console.log('PASS: concurrent image runs');
 
-  // Check the actual namespace and parent reachability, not only the response
-  // field: both omitted and explicit "none" must keep networking disabled.
+  // A sibling outside DinD gives us a deterministic HTTP destination across
+  // the nested bridge, without depending on a public website's availability.
+  probeCreated = true;
+  docker(['run', '-d', '--name', probeName, 'busybox:1.37', 'sh', '-ec',
+    'mkdir -p /www; printf bridge-smoke > /www/index.html; exec httpd -f -p 8080 -h /www']);
+  const probeAddress = docker(['inspect', '--format', '{{.NetworkSettings.Networks.bridge.IPAddress}}', probeName]);
+  assert.match(probeAddress, /^\d+\.\d+\.\d+\.\d+$/);
+  const probeUrl = `http://${probeAddress}:8080/`;
+  assert.equal(docker(['exec', name, 'curl', '--fail', '--silent', '--retry', '5',
+    '--retry-connrefused', '--retry-delay', '1', '--max-time', '5', probeUrl]), 'bridge-smoke');
+
+  // Exercise real bridge networking: a separate namespace, working DNS and
+  // outbound HTTP, and no shared loopback with the runner.
+  const networkProbe = [
+    'set -eu',
+    'readlink /proc/self/ns/net',
+    'ip -4 addr show eth0',
+    'nslookup example.com',
+    `test \"$(wget -q -T 15 -O - ${probeUrl})\" = bridge-smoke`,
+    'echo outbound_http=ok',
+    'if wget -q -T 2 -O /dev/null http://127.0.0.1:8080/healthz; then exit 1; fi',
+    'echo loopback_isolated=ok',
+  ].join('; ');
   docker(['exec', '-i', name, 'docker', 'build', '-t', 'smoke-network', '-'], {
-    input: 'FROM busybox:1.37\nCMD ["sh", "-c", "readlink /proc/self/ns/net; wget -q -T 2 -O /dev/null http://127.0.0.1:8080/healthz; printf \\"parent_http=%s\\\\n\\" $?; exit 0"]\n',
+    input: `FROM busybox:1.37\nCMD ${JSON.stringify(['sh', '-c', networkProbe])}\n`,
   });
   const parentNamespace = docker(['exec', name, 'readlink', '/proc/self/ns/net']);
-  for (const network of [undefined, 'none', 'host']) {
+  for (const network of [undefined, 'bridge']) {
     const result = await request(JSON.stringify({ image: 'smoke-network', network }));
     assert.equal(result.status, 200, JSON.stringify(result.body));
-    assert.equal(result.body.network, network ?? 'none');
-    const [namespace, connectivity] = result.body.stdout.trim().split('\n');
-    if (network === 'host') {
-      assert.equal(namespace, parentNamespace);
-      assert.equal(connectivity, 'parent_http=0');
-    } else {
-      assert.notEqual(namespace, parentNamespace);
-      assert.equal(connectivity, 'parent_http=1');
-    }
+    assert.equal(result.body.network, 'bridge');
+    const namespace = result.body.stdout.trim().split('\n')[0];
+    assert.notEqual(namespace, parentNamespace);
+    assert.match(result.body.stdout, /inet /);
+    assert.match(result.body.stdout, /outbound_http=ok/);
+    assert.match(result.body.stdout, /loopback_isolated=ok/);
   }
-  console.log('PASS: default/explicit none isolate networking; host explicitly shares it');
+  console.log('PASS: default/explicit bridge provide DNS and outbound HTTP with separate namespaces');
 
-  for (const network of ['bridge', '', '--privileged', null, false, 0, [], {}]) {
+  for (const network of ['none', 'host', '', '--privileged', null, false, 0, [], {}]) {
     const result = await request(JSON.stringify({ image: 'hello-world', network }));
     assert.equal(result.status, 400);
     assert.deepEqual(result.body, { error: 'invalid_field', field: 'network' });
